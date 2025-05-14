@@ -1,0 +1,129 @@
+import json
+import uuid
+from datetime import datetime
+import boto3
+import logging
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table('NMB_CUSTOMERS_GOALS')
+
+REQUIRED_FIELDS = ['CUSGOA_NAME', 'CUSTOMER_CODE', 'OWNER', 'STATUS_VALUE', 'PROGRESS', 'DESCRIPTION']
+
+def lambda_handler(event, context):
+    logger.info(f"Received event: {json.dumps(event)}")
+    
+    method = event.get('httpMethod', '').upper()
+    path_params = event.get('pathParameters') or {}
+    query_params = event.get('queryStringParameters') or {}
+
+    if method == 'GET':
+        return handle_get(query_params)
+    elif method == 'POST':
+        try:
+            body = json.loads(event.get('body', '{}'))
+        except Exception as e:
+            return respond(400, {'message': 'Invalid JSON in request body', 'error': str(e)})
+        return handle_post(body, event)
+    elif method == 'PUT':
+        try:
+            body = json.loads(event.get('body', '{}'))
+        except Exception as e:
+            return respond(400, {'message': 'Invalid JSON in request body', 'error': str(e)})
+        return handle_put(path_params, body, event)
+    else:
+        return respond(400, {'message': f'Unsupported method: {method}'})
+
+def handle_get(query_params):
+    customer_code = query_params.get('customer_code')
+    if not customer_code:
+        return respond(400, {'message': 'Missing customer_code in query parameters'})
+    
+    try:
+        response = table.scan(
+            FilterExpression='CUSTOMER_CODE = :cc',
+            ExpressionAttributeValues={':cc': customer_code}
+        )
+        return respond(200, {'goals': response.get('Items', [])})
+    except Exception as e:
+        return respond(500, {'message': 'Error retrieving goals', 'error': str(e)})
+
+def handle_post(data, event):
+    missing = [f for f in REQUIRED_FIELDS if not data.get(f)]
+    if missing:
+        return respond(400, {'message': f'Missing required fields: {missing}'})
+
+    try:
+        now = datetime.utcnow().isoformat()
+        username = get_username(event)
+        cusgoa_id = str(uuid.uuid4())
+        cusgoa_code = f"CUSGOA{cusgoa_id[:8].upper()}"
+        goal_code = f"GOAL{uuid.uuid4().hex[:6].upper()}"
+
+        item = {
+            'CUSGOA_ID': cusgoa_id,
+            'CUSGOA_NAME': data['CUSGOA_NAME'],
+            'CUSGOA_CODE': cusgoa_code,
+            'GOAL_CODE': goal_code,
+            'CUSTOMER_CODE': data['CUSTOMER_CODE'],
+            'OWNER': data['OWNER'],
+            'STATUS_VALUE': data['STATUS_VALUE'],
+            'PROGRESS': data['PROGRESS'],
+            'DESCRIPTION': data['DESCRIPTION'],
+            'NOTES': data.get('NOTES', ''),
+            'CREATETS': now,
+            'UPDATETS': '',
+            'CREATEDBY': username,
+            'UPDATEDBY': '',
+            'ATTRIBUTE01': data.get('ATTRIBUTE01', '')
+        }
+
+        table.put_item(Item=item)
+        return respond(201, {'message': 'Customer goal created', 'CUSGOA_CODE': cusgoa_code})
+    except Exception as e:
+        return respond(500, {'message': 'Error creating goal', 'error': str(e)})
+
+def handle_put(path_params, data, event):
+    code = path_params.get('id')
+    if not code:
+        return respond(400, {'message': 'CUSGOA_CODE is required for update in path'})
+
+    try:
+        existing = table.get_item(Key={'CUSGOA_CODE': code})
+        if 'Item' not in existing:
+            return respond(404, {'message': 'Goal not found'})
+
+        existing_item = existing['Item']
+        now = datetime.utcnow().isoformat()
+        username = get_username(event)
+
+        updated_item = {
+            **existing_item,
+            **data,
+            'CUSGOA_CODE': code,
+            'CUSGOA_ID': existing_item['CUSGOA_ID'],
+            'CREATETS': existing_item['CREATETS'],
+            'CREATEDBY': existing_item['CREATEDBY'],
+            'UPDATETS': now,
+            'UPDATEDBY': username,
+        }
+
+        table.put_item(Item=updated_item)
+        return respond(200, {'message': 'Customer goal updated'})
+    except Exception as e:
+        return respond(500, {'message': 'Error updating goal', 'error': str(e)})
+
+def get_username(event):
+    return event.get('requestContext', {}).get('authorizer', {}).get('claims', {}).get('cognito:username', 'system')
+
+def respond(status_code, body):
+    return {
+        'statusCode': status_code,
+        'headers': {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*'
+        },
+        'body': json.dumps(body)
+    }
