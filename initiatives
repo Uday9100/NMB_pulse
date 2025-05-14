@@ -1,0 +1,79 @@
+import json
+import logging
+import boto3
+from boto3.dynamodb.conditions import Key, Attr
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+dynamodb = boto3.resource('dynamodb')
+initiatives_table = dynamodb.Table('NMB_CUSTOMERSGOALS_INITIATIVES')
+goals_table = dynamodb.Table('NMB_CUSTOMERS_GOALS')
+
+
+def lambda_handler(event, context):
+    logger.info(f"Received event: {json.dumps(event)}")
+
+    customer_code = event.get('queryStringParameters', {}).get('customer_code')
+    if not customer_code:
+        return respond(400, {'message': 'customer_code query parameter is required'})
+
+    try:
+        # Step 1: Get all initiative links for the customer
+        response = initiatives_table.scan(
+            FilterExpression=Attr('CUSGOA_CODE').begins_with(customer_code)
+        )
+        records = response.get('Items', [])
+
+        # Step 2: Build INITIATIVE_CODE -> [CUSGOA_CODEs]
+        initiative_map = {}
+        for r in records:
+            code = r['INITIATIVE_CODE']
+            if code not in initiative_map:
+                initiative_map[code] = []
+            initiative_map[code].append(r['CUSGOA_CODE'])
+
+        result = []
+        for code, cusgoa_list in initiative_map.items():
+            # Fetch details from the first matching record
+            record_details = next((r for r in records if r['INITIATIVE_CODE'] == code), {})
+            status = record_details.get('STATUS', '')
+            owner = record_details.get('OWNER', '')
+            progress = record_details.get('PROGRESS', '')
+            description = record_details.get('DESCRIPTION', '')
+
+            # Get unique GOAL_CODEs
+            goal_codes = set([g[len(customer_code):] for g in cusgoa_list if g.startswith(customer_code)])
+            goal_names = []
+            for goal_code in goal_codes:
+                full_code = f"{customer_code}{goal_code}"
+                goal_resp = goals_table.get_item(Key={'CUSGOA_CODE': full_code})
+                goal_item = goal_resp.get('Item')
+                if goal_item:
+                    goal_names.append(goal_item.get('CUSGOA_NAME', goal_code))
+
+            result.append({
+                'INITIATIVE_CODE': code,
+                'STATUS': status,
+                'OWNER': owner,
+                'PROGRESS': progress,
+                'DESCRIPTION': description,
+                'GOALS': goal_names
+            })
+
+        return respond(200, {'initiatives': result})
+
+    except Exception as e:
+        logger.error(f"Error retrieving initiatives view: {str(e)}")
+        return respond(500, {'message': 'Internal server error', 'error': str(e)})
+
+
+def respond(status_code, body):
+    return {
+        'statusCode': status_code,
+        'headers': {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*'
+        },
+        'body': json.dumps(body)
+    }
