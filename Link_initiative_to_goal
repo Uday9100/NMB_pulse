@@ -14,11 +14,11 @@ def lambda_handler(event, context):
     username = event.get('requestContext', {}).get('authorizer', {}).get('claims', {}).get('cognito:username', 'system')
 
     if method == 'GET':
-        action = query_params.get('action')
-        if action == 'linked_initiatives':
+        cusgoa_code = query_params.get('CUSGOA_CODE')
+        if cusgoa_code:
             return handle_linked_initiatives(query_params)
         else:
-            return response(400, {'message': 'Invalid action'})
+            return response(400, {'message': 'Missing CUSGOA_CODE'})
     else:
         return response(405, {'message': 'Method Not Allowed'})
 
