@@ -6,7 +6,7 @@ import datetime
 dynamodb = boto3.resource('dynamodb')
 goals_table = dynamodb.Table('NMB_CUSTOMERS_GOALS')
 initiatives_table = dynamodb.Table('NMB_BUSINESS_INITIATIVES')
-links_table = dynamodb.Table('NMB_CUSTOMERGOALS_INITIATIVES')
+links_table = dynamodb.Table('NMB_CUSTOMERSGOALS_INITIATIVES')
 
 def lambda_handler(event, context):
     query_params = event.get('queryStringParameters') or {}
