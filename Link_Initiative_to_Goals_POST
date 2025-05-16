@@ -1,0 +1,132 @@
+import json
+import boto3
+import uuid
+from boto3.dynamodb.conditions import Attr
+
+dynamodb = boto3.resource('dynamodb')
+goals_table = dynamodb.Table('NMB_CUSTOMERS_GOALS')
+initiatives_table = dynamodb.Table('NMB_BUSINESS_INITIATIVES')
+links_table = dynamodb.Table('NMB_CUSTOMERGOALS_INITIATIVES')
+
+def lambda_handler(event, context):
+    print("EVENT:", json.dumps(event))
+
+    query_params = event.get('queryStringParameters') or {}
+    method = event.get('httpMethod')
+    username = event.get('requestContext', {}).get('authorizer', {}).get('claims', {}).get('cognito:username', 'system')
+    print(method)
+
+    if method == 'GET':
+        action = query_params.get('action')
+        if action == 'list_initiatives':
+            return handle_get_initiatives(query_params)
+        elif action == 'linked_initiatives':
+            return handle_linked_initiatives(query_params)
+        else:
+            return response(400, {'message': 'Invalid action'})
+
+    elif method == 'POST':
+        return handle_post_link(event)
+
+    elif method == 'DELETE':
+        return handle_delete_link(event)
+
+    else:
+        return response(405, {'message': 'Method Not Allowed'})
+
+def handle_post_link(event):
+    try:
+        body = json.loads(event.get('body') or '{}')
+        goal_code = body.get('goal_code')
+        initiative_code = body.get('initiative_code')
+
+        if not goal_code or not initiative_code:
+            return response(400, {'message': 'goal_code and initiative_code are required'})
+
+        # Generate unique CSGLIN_CODE for the new link
+        link_code = str(uuid.uuid4())
+
+        # Create a link between goal and initiative
+        links_table.put_item(
+            Item={
+                'CSGLIN_CODE': link_code,
+                'CUSGOA_CODE': goal_code,
+                'INITIATIVE_CODE': initiative_code
+            }
+        )
+
+        return response(201, {'message': 'Link created successfully', 'link_code': link_code})
+
+    except Exception as e:
+        return response(500, {'message': 'Error creating link', 'error': str(e)})
+
+def handle_delete_link(event):
+    try:
+        body = json.loads(event.get('body') or '{}')
+        link_code = body.get('link_code')
+
+        if not link_code:
+            return response(400, {'message': 'link_code is required for deletion'})
+
+        # Delete the item from the table
+        links_table.delete_item(
+            Key={'CSGLIN_CODE': link_code}
+        )
+
+        return response(200, {'message': 'Link deleted successfully'})
+
+    except Exception as e:
+        return response(500, {'message': 'Error deleting link', 'error': str(e)})
+
+
+def handle_linked_initiatives(query_params):
+    return response(501, {'message': 'handle_linked_initiatives is not implemented yet'})
+
+def handle_get_initiatives(query_params):
+    goal_code = query_params.get('goal_code')
+
+    if not goal_code:
+        return response(400, {'message': 'Missing goal_code'})
+
+    try:
+        linked_resp = links_table.scan(
+            FilterExpression=Attr('CUSGOA_CODE').eq(goal_code)
+        )
+        linked_items = linked_resp.get('Items', [])
+        code_to_link_id = {
+            item['INITIATIVE_CODE']: item['CUSGLIN_CODE']
+            for item in linked_items
+            if 'INITIATIVE_CODE' in item and 'CUSGLIN_CODE' in item
+        }
+
+        initiative_codes = list(code_to_link_id.keys())
+        if not initiative_codes:
+            return response(200, {'initiatives': []})
+        keys = [{'INITIATIVE_CODE': code} for code in initiative_codes]
+
+        resp = dynamodb.batch_get_item(
+            RequestItems={
+                initiatives_table.name: {
+                    'Keys': keys
+                }
+            }
+        )
+
+        initiatives = resp['Responses'].get(initiatives_table.name, [])
+        for init in initiatives:
+            code = init['INITIATIVE_CODE']
+            init['CUSGLIN_CODE'] = code_to_link_id.get(code)
+        return response(200, {'initiatives': initiatives})
+
+    except Exception as e:
+        return response(500, {'message': 'Error retrieving initiatives', 'error': str(e)})
+
+def response(status_code, body):
+    return {
+        'statusCode': status_code,
+        'headers': {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*'
+        },
+        'body': json.dumps(body)
+    }
