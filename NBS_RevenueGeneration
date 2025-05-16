@@ -141,9 +141,10 @@ def respond(status, body):
 
 ####
 POST:
+
 {
   "httpMethod": "POST",
-  "body": "{\"CSGLINCBH_CODE\":\"ABCR26-GIMSH29-ISTEP23-45\",\"CB_MODELTYPE\":\"Revenue Generation\",\"CB_DETAILTYPE\":\"Benefit Component\",\"NAME\":\"Increased Sales Revenue\",\"YEAR01\":\"$50,000\",\"YEAR02\":\"$150,000\",\"YEAR03\":\"$300,000\",\"YEAR04\":\"\",\"YEAR05\":\"\"}"
+  "body": "{\"CSGLINCBH_CODE\":\"ABCR26-GIMSH29-ISTEP23-11\",\"CB_MODELTYPE\":\"Revenue Generation\",\"CB_DETAILTYPE\":\"Benefit Component\",\"NAME\":\"Increased Sales Revenue\",\"YEAR1\":\"$50,000\",\"YEAR2\":\"$150,000\",\"YEAR3\":\"$300,000\",\"YEAR4\":\"\",\"YEAR5\":\"\"}"
 }
 
 
@@ -167,5 +168,5 @@ Delete:
 PUT(Update):
 {
   "httpMethod": "PUT",
-  "body": "{\"CSGLINCBD_CODE\":\"ABCR26-GIMSH29-ISTEP23-45-3\",\"YEAR01\":\"$60,000\",\"YEAR02\":\"$160,000\",\"YEAR03\":\"$310,000\",\"YEAR04\":\"$50,000\",\"YEAR05\":\"$75,000\",\"CB_MODELTYPE\":\"Revenue Generation\",\"CB_DETAILTYPE\":\"Benefit Component\",\"NAME\":\"Updated Revenue Increase\",\"CSGLINCBH_CODE\":\"ABCR26-GIMSH29-ISTEP23-45\"}"
+  "body": "{\"CSGLINCBD_CODE\":\"ABCR26-GIMSH29-ISTEP23-45-999\",\"YEAR1\":\"$60,000\",\"YEAR2\":\"$160,000\",\"YEAR3\":\"$310,000\",\"YEAR4\":\"$50,000\",\"YEAR5\":\"$75,000\",\"CB_MODELTYPE\":\"Revenue Generation\",\"CB_DETAILTYPE\":\"Benefit Component\",\"NAME\":\"Updated Revenue Increase\",\"CSGLINCBH_CODE\":\"ABCR26-GIMSH29-ISTEP23-45\"}"
 }
