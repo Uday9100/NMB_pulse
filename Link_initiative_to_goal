@@ -1,56 +1,140 @@
 import json
 import boto3
-import uuid
-import datetime
+from boto3.dynamodb.conditions import Attr
 
 dynamodb = boto3.resource('dynamodb')
 goals_table = dynamodb.Table('NMB_CUSTOMERS_GOALS')
 initiatives_table = dynamodb.Table('NMB_BUSINESS_INITIATIVES')
-links_table = dynamodb.Table('NMB_CUSTOMERSGOALS_INITIATIVES')
+links_table = dynamodb.Table('NMB_CUSTOMERGOALS_INITIATIVES')
 
 def lambda_handler(event, context):
     query_params = event.get('queryStringParameters') or {}
     method = event.get('httpMethod')
+    # You can extract username if needed, otherwise default to 'system'
     username = event.get('requestContext', {}).get('authorizer', {}).get('claims', {}).get('cognito:username', 'system')
-
+    print(method)
     if method == 'GET':
-        cusgoa_code = query_params.get('CUSGOA_CODE')
-        if cusgoa_code:
+        action = query_params.get('action')
+        if action == 'list_initiatives':
+            return handle_get_initiatives(query_params)
+        elif action == 'linked_initiatives':
             return handle_linked_initiatives(query_params)
         else:
-            return response(400, {'message': 'Missing CUSGOA_CODE'})
+            return response(400, {'message': 'Invalid action'})
     else:
         return response(405, {'message': 'Method Not Allowed'})
 
 def handle_linked_initiatives(query_params):
-    cusgoa_code = query_params.get('CUSGOA_CODE')
-    if not cusgoa_code:
-        return response(400, {'message': "Missing 'CUSGOA_CODE' in query parameters"})
+    return response(501, {'message': 'handle_linked_initiatives is not implemented yet'})
+
+# def handle_get_initiatives(query_params):
+#     goal_code = query_params.get('goal_code')
+
+#     if not goal_code:
+#         return response(400, {'message': 'Missing goal_code'})
+
+#     try:
+#         # Step 1: Get linked INITIATIVE_CODEs for the given goal_code
+#         linked_resp = links_table.scan(
+#             FilterExpression=Attr('CUSGOA_CODE').eq(goal_code)
+#         )
+#         linked_items = linked_resp.get('Items', [])
+#         initiative_codes = [item['INITIATIVE_CODE'] for item in linked_items if 'INITIATIVE_CODE' in item]
+
+#         if not initiative_codes:
+#             return response(200, {'initiatives': []})
+
+#         # Step 2: Batch get initiatives by their codes
+#         keys = [{'INITIATIVE_CODE': code} for code in initiative_codes]
+
+#         resp = dynamodb.batch_get_item(
+#             RequestItems={
+#                 initiatives_table.name: {
+#                     'Keys': keys
+#                 }
+#             }
+#         )
+
+#         initiatives = resp['Responses'].get(initiatives_table.name, [])
+#         return response(200, {'initiatives': initiatives})
+
+#     except Exception as e:
+#         return response(500, {'message': 'Error retrieving initiatives', 'error': str(e)})
+
+# def handle_get_initiatives(query_params):
+#     goal_code = query_params.get('goal_code')
+
+#     if not goal_code:
+#         return response(400, {'message': 'Missing goal_code'})
+
+#     try:
+#         # Step 1: Get linked INITIATIVE_CODEs
+#         linked_resp = links_table.scan(
+#             FilterExpression=Attr('CUSGOA_CODE').eq(goal_code)
+#         )
+#         linked_items = linked_resp.get('Items', [])
+#         initiative_codes = [item['INITIATIVE_CODE'] for item in linked_items if 'INITIATIVE_CODE' in item]
+
+#         if not initiative_codes:
+#             return response(200, {'initiatives': []})
+
+#         # Step 2: Batch get initiatives
+#         keys = [{'INITIATIVE_CODE': code} for code in initiative_codes]
+#         print(keys)
+#         resp = dynamodb.batch_get_item(
+#             RequestItems={
+#                 initiatives_table.name: {
+#                     'Keys': keys
+#                 }
+#             }
+#         )
+#         print(resp)
+#         initiatives = resp['Responses'].get(initiatives_table.name, [])
+#         return response(200, {'initiatives': initiatives})
+
+#     except Exception as e:
+#         return response(500, {'message': 'Error retrieving initiatives', 'error': str(e)})
+def handle_get_initiatives(query_params):
+    goal_code = query_params.get('goal_code')
+    print(goal_code)
+    if not goal_code:
+        return response(400, {'message': 'Missing goal_code'})
 
     try:
-        # Get linked initiatives from the links table
         linked_resp = links_table.scan(
-            FilterExpression='CUSGOA_CODE = :g',
-            ExpressionAttributeValues={':g': cusgoa_code}
+            FilterExpression=Attr('CUSGOA_CODE').eq(goal_code)
         )
         linked_items = linked_resp.get('Items', [])
+        print(linked_items)
+        code_to_link_id = {
+            item['INITIATIVE_CODE']: item['CSGLIN_CODE']
+            for item in linked_items
+            if 'INITIATIVE_CODE' in item and 'CSGLIN_CODE' in item
+        }
+        print(code_to_link_id)
 
-        linked_initiative_codes = {item['INITIATIVE_CODE'] for item in linked_items}
-
-        if not linked_initiative_codes:
+        initiative_codes = list(code_to_link_id.keys())
+        if not initiative_codes:
             return response(200, {'initiatives': []})
+        keys = [{'INITIATIVE_CODE': code} for code in initiative_codes]
+        print(keys)
+        resp = dynamodb.batch_get_item(
+            RequestItems={
+                initiatives_table.name: {
+                    'Keys': keys
+                }
+            }
+        )
+        print(resp)
 
-        initiatives = []
-        for code in linked_initiative_codes:
-            resp = initiatives_table.get_item(Key={'INITIATIVE_CODE': code})
-            if 'Item' in resp:
-                initiatives.append(resp['Item'])
-
+        initiatives = resp['Responses'].get(initiatives_table.name, [])
+        for init in initiatives:
+            code = init['INITIATIVE_CODE']
+            init['CSGLIN_CODE'] = code_to_link_id.get(code)
         return response(200, {'initiatives': initiatives})
 
     except Exception as e:
         return response(500, {'message': 'Error retrieving initiatives', 'error': str(e)})
-
 def response(status_code, body):
     return {
         'statusCode': status_code,
