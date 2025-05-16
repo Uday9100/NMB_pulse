@@ -131,3 +131,22 @@ def response(status_code, body):
         },
         'body': json.dumps(body)
     }
+
+
+#####
+GET:
+{
+  "httpMethod": "GET",
+  "queryStringParameters": {
+    "action": "list_initiatives",
+    "goal_code": "NMBGOAL01"
+  },
+  "requestContext": {
+    "authorizer": {
+      "claims": {
+        "cognito:username": "test_user"
+      }
+    }
+  }
+}
+ 
