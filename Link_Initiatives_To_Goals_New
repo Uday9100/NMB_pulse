@@ -139,3 +139,31 @@ def response(status_code, body):
         },
         'body': json.dumps(body)
     }
+
+
+
+############
+
+GET:
+{
+  "httpMethod": "GET",
+  "queryStringParameters": {
+    "initiative_code": "IN001"
+  }
+}
+
+Post:
+
+{
+  "httpMethod": "POST",
+  "queryStringParameters": null,
+  "body": "{\"initiative_code\": \"SBS001\", \"goal_code\": \"SBSGOA002\"}"
+}
+
+Delete:
+{
+  "httpMethod": "DELETE",
+  "body": "{\"link_code\":\"6002\"}"
+}
+
+here like code is ntg but CSGLIN_CODE 
