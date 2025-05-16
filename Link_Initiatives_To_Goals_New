@@ -2,23 +2,22 @@ import json
 import boto3
 import uuid
 from boto3.dynamodb.conditions import Attr
+from boto3.dynamodb.types import TypeDeserializer
 
-# DynamoDB resource for table operations (put, delete, scan)
 dynamodb = boto3.resource('dynamodb')
 goals_table = dynamodb.Table('NMB_CUSTOMERS_GOALS')
 initiatives_table = dynamodb.Table('NMB_BUSINESS_INITIATIVES')
 links_table = dynamodb.Table('NMB_CUSTOMERGOALS_INITIATIVES')
 
-# DynamoDB client for batch_get_item
 dynamodb_client = boto3.client('dynamodb')
+deserializer = TypeDeserializer()  # For converting DynamoDB JSON to plain JSON
 
 def lambda_handler(event, context):
-    print("Full Event:", json.dumps(event))  # 🔍 Debug full event
+    print("Full Event:", json.dumps(event))
 
     query_params = event.get('queryStringParameters') or {}
     print("Query Parameters:", query_params)
 
-    # ✅ FIX: Get HTTP method safely (fallback for test-invoke)
     method = event.get('httpMethod') or event.get('requestContext', {}).get('http', {}).get('method')
     print(f"HTTP Method: {method}")
 
@@ -39,6 +38,13 @@ def lambda_handler(event, context):
     else:
         return response(405, {'message': 'Method Not Allowed'})
 
+def deserialize_dynamodb_items(items):
+    """Convert DynamoDB JSON items to normal dicts."""
+    deserialized = []
+    for item in items:
+        deserialized.append({k: deserializer.deserialize(v) for k, v in item.items()})
+    return deserialized
+
 def handle_get_goals(initiative_code):
     try:
         linked_resp = links_table.scan(
@@ -50,13 +56,14 @@ def handle_get_goals(initiative_code):
         if not goal_codes:
             return response(200, {'goals': []})
 
-        # Format keys for batch_get_item
         keys = [{'CUSGOA_CODE': {'S': code}} for code in goal_codes]
 
         resp = dynamodb_client.batch_get_item(
             RequestItems={goals_table.name: {'Keys': keys}}
         )
-        goals = resp['Responses'].get(goals_table.name, [])
+        raw_goals = resp['Responses'].get(goals_table.name, [])
+        goals = deserialize_dynamodb_items(raw_goals)
+
         return response(200, {'goals': goals})
 
     except Exception as e:
@@ -78,7 +85,9 @@ def handle_get_initiatives(goal_code):
         resp = dynamodb_client.batch_get_item(
             RequestItems={initiatives_table.name: {'Keys': keys}}
         )
-        initiatives = resp['Responses'].get(initiatives_table.name, [])
+        raw_initiatives = resp['Responses'].get(initiatives_table.name, [])
+        initiatives = deserialize_dynamodb_items(raw_initiatives)
+
         return response(200, {'initiatives': initiatives})
 
     except Exception as e:
