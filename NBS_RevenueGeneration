@@ -1,0 +1,171 @@
+
+
+import json
+import boto3
+import uuid
+from boto3.dynamodb.conditions import Attr
+from decimal import Decimal
+from datetime import datetime
+
+dynamodb = boto3.resource('dynamodb')
+details_table = dynamodb.Table('NMB_BCB_DETAILS')
+
+def convert_decimal(obj):
+    if isinstance(obj, list):
+        return [convert_decimal(i) for i in obj]
+    elif isinstance(obj, dict):
+        return {k: convert_decimal(v) for k, v in obj.items()}
+    elif isinstance(obj, Decimal):
+        return int(obj) if obj % 1 == 0 else float(obj)
+    else:
+        return obj
+
+def lambda_handler(event, context):
+    method = event.get('httpMethod')
+    
+    if method == 'GET':
+        params = event.get('queryStringParameters') or {}
+        code = params.get('CSGLINCBD_CODE')
+
+        if code:
+            resp = details_table.get_item(Key={'CSGLINCBD_CODE': code})
+            item = resp.get('Item')
+            if item:
+                # Filter only required fields
+                response_item = {k: item.get(k) for k in [
+                    'CSGLINCBD_ID', 'CSGLINCBD_CODE', 'CB_DETAILTYPE', 'CB_MODELTYPE',
+                    'CSGLINCBH_CODE', 'NAME', 'YEAR01', 'YEAR02', 'YEAR03', 'YEAR04', 'YEAR05'
+                ]}
+                return respond(200, response_item)
+            else:
+                return respond(404, {'message': 'Item not found'})
+        else:
+            return respond(400, {'message': 'CSGLINCBD_CODE is required for GET'})
+
+    elif method == 'POST':
+        try:
+            body = json.loads(event.get('body') or '{}')
+            code = str(uuid.uuid4())  # PK
+            item_id = str(uuid.uuid4())  # Unique ID
+            timestamp = datetime.utcnow().isoformat()
+
+            item = {
+                'CSGLINCBD_ID': item_id,
+                'CSGLINCBD_CODE': code,
+                'CSGLINCBH_CODE': body['CSGLINCBH_CODE'],
+                'CB_MODELTYPE': body['CB_MODELTYPE'],
+                'CB_DETAILTYPE': body['CB_DETAILTYPE'],
+                'NAME': body['NAME'],
+                'YEAR01': body.get('YEAR01'),
+                'YEAR02': body.get('YEAR02'),
+                'YEAR03': body.get('YEAR03'),
+                'YEAR04': body.get('YEAR04'),
+                'YEAR05': body.get('YEAR05'),
+                'CREATETS': timestamp,
+                'UPDATETS': timestamp,
+                'CREATEBY': body.get('CREATEBY', 'system'),
+                'UPDATEBY': body.get('UPDATEBY', 'system'),
+                'ATTRIBUTE01': body.get('ATTRIBUTE01', '')
+            }
+            details_table.put_item(Item=item)
+            return respond(201, {'message': 'Created', 'CSGLINCBD_CODE': code, 'CSGLINCBD_ID': item_id})
+        except Exception as e:
+            return respond(400, {'message': 'Invalid input', 'error': str(e)})
+
+    elif method == 'PUT':
+        try:
+            body = json.loads(event.get('body') or '{}')
+            code = body.get('CSGLINCBD_CODE')
+            if not code:
+                return respond(400, {'message': 'CSGLINCBD_CODE is required'})
+
+            timestamp = datetime.utcnow().isoformat()
+
+            update_fields = ['YEAR01', 'YEAR02', 'YEAR03', 'YEAR04', 'YEAR05',
+                             'CB_MODELTYPE', 'CB_DETAILTYPE', 'NAME', 'CSGLINCBH_CODE',
+                             'UPDATEBY', 'ATTRIBUTE01']
+            expression = []
+            values = {}
+            names = {}
+
+            for f in update_fields:
+                if f in body:
+                    if f.upper() == 'NAME':  # Handle reserved word
+                        expression.append("#N = :name")
+                        values[":name"] = body[f]
+                        names["#N"] = "NAME"
+                    else:
+                        expression.append(f"{f} = :{f}")
+                        values[f":{f}"] = body[f]
+
+            # Always update UPDATETS
+            expression.append("UPDATETS = :UPDATETS")
+            values[":UPDATETS"] = timestamp
+
+            update_expr = "SET " + ", ".join(expression)
+
+            kwargs = {
+                'Key': {'CSGLINCBD_CODE': code},
+                'UpdateExpression': update_expr,
+                'ExpressionAttributeValues': values
+            }
+            if names:
+                kwargs['ExpressionAttributeNames'] = names
+
+            details_table.update_item(**kwargs)
+            return respond(200, {'message': 'Updated'})
+        except Exception as e:
+            return respond(400, {'message': 'Error updating', 'error': str(e)})
+
+    elif method == 'DELETE':
+        try:
+            body = json.loads(event.get('body') or '{}')
+            code = body.get('CSGLINCBD_CODE')
+            if not code:
+                return respond(400, {'message': 'CSGLINCBD_CODE is required'})
+            details_table.delete_item(Key={'CSGLINCBD_CODE': code})
+            return respond(200, {'message': 'Deleted'})
+        except Exception as e:
+            return respond(400, {'message': 'Error deleting', 'error': str(e)})
+
+    else:
+        return respond(405, {'message': 'Method Not Allowed'})
+
+def respond(status, body):
+    body = convert_decimal(body)
+    return {
+        'statusCode': status,
+        'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
+        'body': json.dumps(body)
+    }
+
+####
+POST:
+{
+  "httpMethod": "POST",
+  "body": "{\"CSGLINCBH_CODE\":\"ABCR26-GIMSH29-ISTEP23-45\",\"CB_MODELTYPE\":\"Revenue Generation\",\"CB_DETAILTYPE\":\"Benefit Component\",\"NAME\":\"Increased Sales Revenue\",\"YEAR01\":\"$50,000\",\"YEAR02\":\"$150,000\",\"YEAR03\":\"$300,000\",\"YEAR04\":\"\",\"YEAR05\":\"\"}"
+}
+
+
+GET:
+{
+  "httpMethod": "GET",
+  "queryStringParameters": {
+    "CSGLINCBH_CODE": "ABCR26-GIMSH29-ISTEP23-45",
+    "CB_MODELTYPE": "Revenue Generation",
+    "CB_DETAILTYPE": "Benefit Component",
+    "NAME": "Increased Sales Revenue"
+  }
+}
+
+Delete:
+{
+  "httpMethod": "DELETE",
+  "body": "{\"CSGLINCBD_CODE\":\"22d57797-0add-42be-9eb4-7b8082eb4939\"}"
+}
+
+PUT(Update):
+{
+  "httpMethod": "PUT",
+  "body": "{\"CSGLINCBD_CODE\":\"ABCR26-GIMSH29-ISTEP23-45-3\",\"YEAR01\":\"$60,000\",\"YEAR02\":\"$160,000\",\"YEAR03\":\"$310,000\",\"YEAR04\":\"$50,000\",\"YEAR05\":\"$75,000\",\"CB_MODELTYPE\":\"Revenue Generation\",\"CB_DETAILTYPE\":\"Benefit Component\",\"NAME\":\"Updated Revenue Increase\",\"CSGLINCBH_CODE\":\"ABCR26-GIMSH29-ISTEP23-45\"}"
+}
