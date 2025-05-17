@@ -158,6 +158,12 @@ GET:
     "NAME": "Increased Sales Revenue"
   }
 }
+or {
+  "httpMethod": "GET",
+  "queryStringParameters": {
+    "CSGLINCBD_CODE": "e5aaa5e4-3da0-4b37-b723-6701b211f250"
+  }
+}
 
 Delete:
 {
