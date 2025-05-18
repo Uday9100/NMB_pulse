@@ -1,169 +1,254 @@
 import json
 import boto3
-from boto3.dynamodb.conditions import Key
 import datetime
-import decimal
+from boto3.dynamodb.conditions import Attr
 
-# Initialize DynamoDB resource
-region_name = 'us-east-2'  # Adjust your region here
-dynamodb = boto3.resource('dynamodb', region_name=region_name)
+dynamodb = boto3.resource('dynamodb', region_name='us-east-2')
+table_header = dynamodb.Table('NMB_BCB_HEADER')
+table_detail = dynamodb.Table('NMB_BCB_DETAILS')
 
-header_table = dynamodb.Table('NMB_BCB_HEADER')
-details_table = dynamodb.Table('NMB_BCB_DETAILS')
+from decimal import Decimal
 
-# Helper to convert Decimal to int or float for JSON serialization
 def decimal_default(obj):
-    if isinstance(obj, decimal.Decimal):
-        return int(obj) if obj % 1 == 0 else float(obj)
-    raise TypeError(f"Type {type(obj)} not serializable")
+    if isinstance(obj, Decimal):
+        if obj % 1 == 0:
+            return int(obj)
+        else:
+            return float(obj)
+    raise TypeError
 
-def response(status_code, body):
-    return {
-        'statusCode': status_code,
-        'headers': {
-            'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': '*'
-        },
-        'body': json.dumps(body, default=decimal_default)
-    }
+def get_current_timestamp():
+    return datetime.datetime.utcnow().isoformat()
+
+def get_user_identity(event):
+    return event.get('requestContext', {}).get('authorizer', {}).get('claims', {}).get('cognito:username', 'unknown')
+
+def get_next_id(table, id_field):
+    # Scan entire table to find max ID
+    response = table.scan(
+        ProjectionExpression=id_field
+    )
+    items = response.get('Items', [])
+    max_id = 0
+    for item in items:
+        try:
+            val = int(item.get(id_field, 0))
+            if val > max_id:
+                max_id = val
+        except Exception:
+            continue
+    return max_id + 1
 
 def lambda_handler(event, context):
-    print("Event: ", json.dumps(event))
-    method = event['httpMethod']
-    path = event.get('path', '')
-    query_params = event.get('queryStringParameters') or {}
-    body = json.loads(event.get('body', '{}')) if event.get('body') else {}
-
-    if method == 'POST' and '/header' in path:
-        return create_header(body, event)
-    elif method == 'POST' and '/details' in path:
-        return create_detail(body, event)
-    elif method == 'GET' and '/combined' in path:
-        header_code = query_params.get('CSGLINCBH_CODE')
-        if not header_code:
-            return response(400, {'message': 'Missing CSGLINCBH_CODE parameter'})
-        return get_header_with_details(header_code)
-    elif method == 'PUT' and '/header' in path:
-        return update_header(body, event)
-    elif method == 'PUT' and '/details' in path:
-        return update_detail(body, event)
-    elif method == 'DELETE' and '/header' in path:
-        return delete_header(body)
-    elif method == 'DELETE' and '/details' in path:
-        return delete_detail(body)
-    else:
-        return response(400, {"message": "Unsupported operation"})
-
-def generate_initiative_code(sequence_number):
-    return str(sequence_number)
-
-def create_header(data, event):
-    user = event['requestContext']['authorizer']['claims']['cognito:username']
-    now = datetime.datetime.utcnow().isoformat()
-
-    count_response = header_table.scan(Select='COUNT')
-    sequence_number = count_response.get('Count', 0) + 1
-    header_id = int(generate_initiative_code(sequence_number))
-
-    header_code = data['CSGLINCBH_CODE']
-
-    item = {
-        'CSGLINCBH_ID': header_id,
-        'CSGLINCBH_CODE': header_code,
-        'DEPARTMENT': data['DEPARTMENT'],
-        'TIMELINE': data['TIMELINE'],
-        'OWNER': data['OWNER'],
-        'DESCRIPTION': data['DESCRIPTION'],
-        'SUMMARY': data['SUMMARY'],
-        'CREATETS': now,
-        'UPDATETS': now,
-        'CREATEDBY': user,
-        'UPDATEDBY': user,
-        'ATTRIBUTE01': data.get('ATTRIBUTE01', '')
-    }
-    header_table.put_item(Item=item)
-    return response(201, item)
-
-def create_detail(data, event):
-    user = event['requestContext']['authorizer']['claims']['cognito:username']
-    now = datetime.datetime.utcnow().isoformat()
-
-    count_response = details_table.scan(Select='COUNT')
-    sequence_number = count_response.get('Count', 0) + 1
-    detail_id = int(generate_initiative_code(sequence_number))
-
-    detail_code = f"{data['CSGLINCBH_CODE']}-{detail_id}"
-
-    item = {
-        'CSGLINCBD_ID': detail_id,
-        'CSGLINCBD_CODE': detail_code,
-        'CSGLINCBH_CODE': data['CSGLINCBH_CODE'],
-        'CB_MODELTYPE': data['CB_MODELTYPE'],
-        'CB_DETAILTYPE': data['CB_DETAILTYPE'],
-        'NAME': data['NAME'],
-        'YEAR01': data.get('YEAR01', ''),
-        'YEAR02': data.get('YEAR02', ''),
-        'YEAR03': data.get('YEAR03', ''),
-        'YEAR04': data.get('YEAR04', ''),
-        'CREATETS': now,
-        'UPDATETS': now,
-        'CREATEDBY': user,
-        'UPDATEDBY': user,
-        'ATTRIBUTE01': data.get('ATTRIBUTE01', '')
-    }
-    details_table.put_item(Item=item)
-    return response(201, item)
-
-def get_header_with_details(header_code):
     try:
-        header_resp = header_table.get_item(Key={'CSGLINCBH_CODE': header_code})
-        if 'Item' not in header_resp:
-            return response(404, {'message': 'Header not found'})
+        method = event.get('httpMethod', '')
+        user = get_user_identity(event)
+        now = get_current_timestamp()
 
-        header_item = header_resp['Item']
+        if method == 'GET':
+            # Get CSGLINCBH_CODE from query params
+            params = event.get('queryStringParameters') or {}
+            csglin_code = params.get('CSGLINCBH_CODE') or params.get('code')
+            if not csglin_code:
+                return {
+                    "statusCode": 400,
+                    "body": json.dumps({"message": "CSGLINCBH_CODE is required"})
+                }
 
-        details_resp = details_table.scan(
-            FilterExpression=Key('CSGLINCBH_CODE').eq(header_code)
-        )
-        detail_items = details_resp.get('Items', [])
+            # Fetch header by key
+            header_resp = table_header.get_item(Key={'CSGLINCBH_CODE': csglin_code})
+            header = header_resp.get('Item')
+            if not header:
+                return {
+                    "statusCode": 404,
+                    "body": json.dumps({"message": "Header not found"})
+                }
 
-        return response(200, {
-            'header': header_item,
-            'details': detail_items
-        })
+            # Scan details with filter on CSGLINCBH_CODE
+            details_resp = table_detail.scan(
+                FilterExpression=Attr('CSGLINCBH_CODE').eq(csglin_code)
+            )
+            details = details_resp.get('Items', [])
+
+            return {
+                "statusCode": 200,
+                "body": json.dumps({"header": header, "details": details}, default=decimal_default)
+            }
+
+        elif method == 'POST':
+            # Expect JSON body
+            body = json.loads(event.get('body') or '{}')
+
+            # === HEADER creation ===
+            # Generate CSGLINCBH_ID max+1
+            new_header_id = get_next_id(table_header, 'CSGLINCBH_ID')
+
+            csglin_code = body.get('CSGLINCBH_CODE')
+            if not csglin_code:
+                return {
+                    "statusCode": 400,
+                    "body": json.dumps({"message": "CSGLINCBH_CODE is required in body"})
+                }
+
+            header_item = {
+                'CSGLINCBH_ID': new_header_id,
+                'CSGLINCBH_CODE': csglin_code,
+                'DEPARTMENT': body.get('DEPARTMENT', ''),
+                'TIMELINE': body.get('TIMELINE', ''),
+                'OWNER': body.get('OWNER', ''),
+                'DESCRIPTION': body.get('DESCRIPTION', ''),
+                'SUMMARY': body.get('SUMMARY', ''),
+                'CREATETS': now,
+                'UPDATETS': '',
+                'CREATEDBY': user,
+                'UPDATEDBY': '',
+                'ATTRIBUTE01': body.get('ATTRIBUTE01', '')
+            }
+
+            table_header.put_item(Item=header_item)
+
+            # === DETAILS creation ===
+            details_list = body.get('details', [])  # expecting a list of detail objects
+            created_details = []
+
+            for d in details_list:
+                new_detail_id = get_next_id(table_detail, 'CSGLINCBD_ID')
+
+                # Compose CSGLINCBD_CODE as CSGLINCBH_CODE + '-' + CSGLINCBD_ID
+                detail_code = f"{csglin_code}-{new_detail_id}"
+
+                detail_item = {
+                    'CSGLINCBD_ID': new_detail_id,
+                    'CSGLINCBD_CODE': detail_code,
+                    'CSGLINCBH_CODE': csglin_code,
+                    'CB_MODELTYPE': d.get('CB_MODELTYPE', ''),
+                    'CB_DETAILTYPE': d.get('CB_DETAILTYPE', ''),
+                    'NAME': d.get('NAME', ''),
+                    'YEAR1': d.get('YEAR1', ''),
+                    'YEAR2': d.get('YEAR2', ''),
+                    'YEAR3': d.get('YEAR3', ''),
+                    'YEAR4': d.get('YEAR4', ''),
+                    'YEAR5': d.get('YEAR5', ''),
+                    'CREATETS': now,
+                    'UPDATETS': '',
+                    'CREATEDBY': user,
+                    'UPDATEDBY': '',
+                    'ATTRIBUTE01': ''
+                }
+
+                table_detail.put_item(Item=detail_item)
+                created_details.append(detail_item)
+
+            return {
+                "statusCode": 201,
+                "body": json.dumps({"header": header_item, "details": created_details})
+            }
+
+        elif method == 'PUT':
+            # Update existing header and details
+            body = json.loads(event.get('body') or '{}')
+
+            csglin_code = body.get('CSGLINCBH_CODE')
+            if not csglin_code:
+                return {
+                    "statusCode": 400,
+                    "body": json.dumps({"message": "CSGLINCBH_CODE is required for update"})
+                }
+
+            # Update header fields - only update fields if provided
+            update_expression = []
+            expression_attribute_values = {}
+            expression_attribute_names = {}
+
+            updatable_fields = ['DEPARTMENT', 'TIMELINE', 'OWNER', 'DESCRIPTION', 'SUMMARY', 'ATTRIBUTE01']
+
+            for field in updatable_fields:
+                if field in body:
+                    update_expression.append(f"#{field} = :{field}")
+                    expression_attribute_values[f":{field}"] = body[field]
+                    expression_attribute_names[f"#{field}"] = field
+
+            if not update_expression:
+                return {
+                    "statusCode": 400,
+                    "body": json.dumps({"message": "No updatable header fields provided"})
+                }
+
+            # Add UPDATETS and UPDATEDBY
+            update_expression.append("#UPDATETS = :updatets")
+            update_expression.append("#UPDATEDBY = :updatedby")
+            expression_attribute_values[":updatets"] = get_current_timestamp()
+            expression_attribute_values[":updatedby"] = get_user_identity(event)
+            expression_attribute_names["#UPDATETS"] = "UPDATETS"
+            expression_attribute_names["#UPDATEDBY"] = "UPDATEDBY"
+
+            update_expr = "SET " + ", ".join(update_expression)
+
+            # Update header item
+            table_header.update_item(
+                Key={'CSGLINCBH_CODE': csglin_code},
+                UpdateExpression=update_expr,
+                ExpressionAttributeNames=expression_attribute_names,
+                ExpressionAttributeValues=expression_attribute_values
+            )
+
+            # Update details if provided (list)
+            details_list = body.get('details', [])
+            updated_details = []
+
+            for d in details_list:
+                # Must have CSGLINCBD_CODE for update
+                detail_code = d.get('CSGLINCBD_CODE')
+                if not detail_code:
+                    continue  # skip detail without key
+
+                # Build update expressions for details
+                det_update_expr = []
+                det_expr_attr_vals = {}
+                det_expr_attr_names = {}
+
+                det_updatable_fields = ['CB_MODELTYPE', 'CB_DETAILTYPE', 'NAME', 'YEAR1', 'YEAR2', 'YEAR3', 'YEAR4', 'YEAR5', 'ATTRIBUTE01']
+
+                for f in det_updatable_fields:
+                    if f in d:
+                        det_update_expr.append(f"#{f} = :{f}")
+                        det_expr_attr_vals[f":{f}"] = d[f]
+                        det_expr_attr_names[f"#{f}"] = f
+
+                if not det_update_expr:
+                    continue  # nothing to update
+
+                det_update_expr.append("#UPDATETS = :updatets")
+                det_update_expr.append("#UPDATEDBY = :updatedby")
+                det_expr_attr_vals[":updatets"] = get_current_timestamp()
+                det_expr_attr_vals[":updatedby"] = user
+                det_expr_attr_names["#UPDATETS"] = "UPDATETS"
+                det_expr_attr_names["#UPDATEDBY"] = "UPDATEDBY"
+
+                det_update_expression = "SET " + ", ".join(det_update_expr)
+
+                table_detail.update_item(
+                    Key={'CSGLINCBD_CODE': detail_code},
+                    UpdateExpression=det_update_expression,
+                    ExpressionAttributeNames=det_expr_attr_names,
+                    ExpressionAttributeValues=det_expr_attr_vals
+                )
+                # Optionally get updated detail - here just echo input
+                updated_details.append(d)
+
+            return {
+                "statusCode": 200,
+                "body": json.dumps({"message": "Update successful", "updated_header_code": csglin_code, "updated_details_count": len(updated_details)})
+            }
+
+        else:
+            return {
+                "statusCode": 405,
+                "body": json.dumps({"message": "Method not allowed"})
+            }
+
     except Exception as e:
-        return response(500, {'message': 'Failed to fetch combined data', 'error': str(e)})
-
-def update_header(data, event):
-    user = event['requestContext']['authorizer']['claims']['cognito:username']
-    key = {'CSGLINCBH_CODE': data['CSGLINCBH_CODE']}
-    update_expr = "SET DEPARTMENT=:d, TIMELINE=:t, OWNER=:o, DESCRIPTION=:desc, SUMMARY=:s, UPDATETS=:u, UPDATEDBY=:by"
-    expr_vals = {
-        ':d': data['DEPARTMENT'], ':t': data['TIMELINE'], ':o': data['OWNER'],
-        ':desc': data['DESCRIPTION'], ':s': data['SUMMARY'],
-        ':u': datetime.datetime.utcnow().isoformat(), ':by': user
-    }
-    header_table.update_item(Key=key, UpdateExpression=update_expr, ExpressionAttributeValues=expr_vals)
-    return response(200, {'message': 'Header updated'})
-
-def update_detail(data, event):
-    user = event['requestContext']['authorizer']['claims']['cognito:username']
-    key = {'CSGLINCBD_CODE': data['CSGLINCBD_CODE']}
-    update_expr = "SET NAME=:n, YEAR01=:y1, YEAR02=:y2, YEAR03=:y3, YEAR04=:y4, UPDATETS=:u, UPDATEDBY=:by"
-    expr_vals = {
-        ':n': data['NAME'], ':y1': data['YEAR01'], ':y2': data['YEAR02'],
-        ':y3': data['YEAR03'], ':y4': data['YEAR04'],
-        ':u': datetime.datetime.utcnow().isoformat(), ':by': user
-    }
-    details_table.update_item(Key=key, UpdateExpression=update_expr, ExpressionAttributeValues=expr_vals)
-    return response(200, {'message': 'Detail updated'})
-
-def delete_header(data):
-    key = {'CSGLINCBH_CODE': data['CSGLINCBH_CODE']}
-    header_table.delete_item(Key=key)
-    return response(200, {'message': 'Header deleted'})
-
-def delete_detail(data):
-    key = {'CSGLINCBD_CODE': data['CSGLINCBD_CODE']}
-    details_table.delete_item(Key=key)
-    return response(200, {'message': 'Detail deleted'})
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"message": "Internal server error", "error": str(e)})
+        }
