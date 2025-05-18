@@ -1,0 +1,169 @@
+import json
+import boto3
+from boto3.dynamodb.conditions import Key
+import datetime
+import decimal
+
+# Initialize DynamoDB resource
+region_name = 'us-east-2'  # Adjust your region here
+dynamodb = boto3.resource('dynamodb', region_name=region_name)
+
+header_table = dynamodb.Table('NMB_BCB_HEADER')
+details_table = dynamodb.Table('NMB_BCB_DETAILS')
+
+# Helper to convert Decimal to int or float for JSON serialization
+def decimal_default(obj):
+    if isinstance(obj, decimal.Decimal):
+        return int(obj) if obj % 1 == 0 else float(obj)
+    raise TypeError(f"Type {type(obj)} not serializable")
+
+def response(status_code, body):
+    return {
+        'statusCode': status_code,
+        'headers': {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*'
+        },
+        'body': json.dumps(body, default=decimal_default)
+    }
+
+def lambda_handler(event, context):
+    print("Event: ", json.dumps(event))
+    method = event['httpMethod']
+    path = event.get('path', '')
+    query_params = event.get('queryStringParameters') or {}
+    body = json.loads(event.get('body', '{}')) if event.get('body') else {}
+
+    if method == 'POST' and '/header' in path:
+        return create_header(body, event)
+    elif method == 'POST' and '/details' in path:
+        return create_detail(body, event)
+    elif method == 'GET' and '/combined' in path:
+        header_code = query_params.get('CSGLINCBH_CODE')
+        if not header_code:
+            return response(400, {'message': 'Missing CSGLINCBH_CODE parameter'})
+        return get_header_with_details(header_code)
+    elif method == 'PUT' and '/header' in path:
+        return update_header(body, event)
+    elif method == 'PUT' and '/details' in path:
+        return update_detail(body, event)
+    elif method == 'DELETE' and '/header' in path:
+        return delete_header(body)
+    elif method == 'DELETE' and '/details' in path:
+        return delete_detail(body)
+    else:
+        return response(400, {"message": "Unsupported operation"})
+
+def generate_initiative_code(sequence_number):
+    return str(sequence_number)
+
+def create_header(data, event):
+    user = event['requestContext']['authorizer']['claims']['cognito:username']
+    now = datetime.datetime.utcnow().isoformat()
+
+    count_response = header_table.scan(Select='COUNT')
+    sequence_number = count_response.get('Count', 0) + 1
+    header_id = int(generate_initiative_code(sequence_number))
+
+    header_code = data['CSGLINCBH_CODE']
+
+    item = {
+        'CSGLINCBH_ID': header_id,
+        'CSGLINCBH_CODE': header_code,
+        'DEPARTMENT': data['DEPARTMENT'],
+        'TIMELINE': data['TIMELINE'],
+        'OWNER': data['OWNER'],
+        'DESCRIPTION': data['DESCRIPTION'],
+        'SUMMARY': data['SUMMARY'],
+        'CREATETS': now,
+        'UPDATETS': now,
+        'CREATEDBY': user,
+        'UPDATEDBY': user,
+        'ATTRIBUTE01': data.get('ATTRIBUTE01', '')
+    }
+    header_table.put_item(Item=item)
+    return response(201, item)
+
+def create_detail(data, event):
+    user = event['requestContext']['authorizer']['claims']['cognito:username']
+    now = datetime.datetime.utcnow().isoformat()
+
+    count_response = details_table.scan(Select='COUNT')
+    sequence_number = count_response.get('Count', 0) + 1
+    detail_id = int(generate_initiative_code(sequence_number))
+
+    detail_code = f"{data['CSGLINCBH_CODE']}-{detail_id}"
+
+    item = {
+        'CSGLINCBD_ID': detail_id,
+        'CSGLINCBD_CODE': detail_code,
+        'CSGLINCBH_CODE': data['CSGLINCBH_CODE'],
+        'CB_MODELTYPE': data['CB_MODELTYPE'],
+        'CB_DETAILTYPE': data['CB_DETAILTYPE'],
+        'NAME': data['NAME'],
+        'YEAR01': data.get('YEAR01', ''),
+        'YEAR02': data.get('YEAR02', ''),
+        'YEAR03': data.get('YEAR03', ''),
+        'YEAR04': data.get('YEAR04', ''),
+        'CREATETS': now,
+        'UPDATETS': now,
+        'CREATEDBY': user,
+        'UPDATEDBY': user,
+        'ATTRIBUTE01': data.get('ATTRIBUTE01', '')
+    }
+    details_table.put_item(Item=item)
+    return response(201, item)
+
+def get_header_with_details(header_code):
+    try:
+        header_resp = header_table.get_item(Key={'CSGLINCBH_CODE': header_code})
+        if 'Item' not in header_resp:
+            return response(404, {'message': 'Header not found'})
+
+        header_item = header_resp['Item']
+
+        details_resp = details_table.scan(
+            FilterExpression=Key('CSGLINCBH_CODE').eq(header_code)
+        )
+        detail_items = details_resp.get('Items', [])
+
+        return response(200, {
+            'header': header_item,
+            'details': detail_items
+        })
+    except Exception as e:
+        return response(500, {'message': 'Failed to fetch combined data', 'error': str(e)})
+
+def update_header(data, event):
+    user = event['requestContext']['authorizer']['claims']['cognito:username']
+    key = {'CSGLINCBH_CODE': data['CSGLINCBH_CODE']}
+    update_expr = "SET DEPARTMENT=:d, TIMELINE=:t, OWNER=:o, DESCRIPTION=:desc, SUMMARY=:s, UPDATETS=:u, UPDATEDBY=:by"
+    expr_vals = {
+        ':d': data['DEPARTMENT'], ':t': data['TIMELINE'], ':o': data['OWNER'],
+        ':desc': data['DESCRIPTION'], ':s': data['SUMMARY'],
+        ':u': datetime.datetime.utcnow().isoformat(), ':by': user
+    }
+    header_table.update_item(Key=key, UpdateExpression=update_expr, ExpressionAttributeValues=expr_vals)
+    return response(200, {'message': 'Header updated'})
+
+def update_detail(data, event):
+    user = event['requestContext']['authorizer']['claims']['cognito:username']
+    key = {'CSGLINCBD_CODE': data['CSGLINCBD_CODE']}
+    update_expr = "SET NAME=:n, YEAR01=:y1, YEAR02=:y2, YEAR03=:y3, YEAR04=:y4, UPDATETS=:u, UPDATEDBY=:by"
+    expr_vals = {
+        ':n': data['NAME'], ':y1': data['YEAR01'], ':y2': data['YEAR02'],
+        ':y3': data['YEAR03'], ':y4': data['YEAR04'],
+        ':u': datetime.datetime.utcnow().isoformat(), ':by': user
+    }
+    details_table.update_item(Key=key, UpdateExpression=update_expr, ExpressionAttributeValues=expr_vals)
+    return response(200, {'message': 'Detail updated'})
+
+def delete_header(data):
+    key = {'CSGLINCBH_CODE': data['CSGLINCBH_CODE']}
+    header_table.delete_item(Key=key)
+    return response(200, {'message': 'Header deleted'})
+
+def delete_detail(data):
+    key = {'CSGLINCBD_CODE': data['CSGLINCBD_CODE']}
+    details_table.delete_item(Key=key)
+    return response(200, {'message': 'Detail deleted'})
