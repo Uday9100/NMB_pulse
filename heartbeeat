@@ -1,0 +1,141 @@
+import json
+import boto3
+from datetime import datetime
+from boto3.dynamodb.conditions import Key
+import uuid
+
+dynamodb = boto3.resource('dynamodb')
+heartbeat_table = dynamodb.Table('NMB_HEARTBEAT')
+initiatives_table = dynamodb.Table('NMB_CUSTOMERS_INITIATIVES')
+customers_table = dynamodb.Table('NMB_CUSTOMERS')
+
+bedrock = boto3.client('bedrock-runtime')
+
+def generate_bedrock_advice(customer_name, industry):
+    prompt = f"""
+    Provide 5 business improvement suggestions for a company named {customer_name} in the {industry} industry.
+    Each suggestion should have a short heading and a detailed explanation.
+    """
+    
+    response = bedrock.invoke_model(
+        modelId="anthropic.claude-3-sonnet-20240229-v1:0",
+        contentType="application/json",
+        accept="application/json",
+        body=json.dumps({
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 1024,
+            "temperature": 0.7,
+            "messages": [{"role": "user", "content": prompt}]
+        })
+    )
+    result = json.loads(response['body'].read())
+    return result['content'][0]['text']
+
+def parse_bedrock_output(text):
+    lines = [line.strip() for line in text.strip().split("\n") if line.strip()]
+    headings, details = [], []
+    for line in lines:
+        if ':' in line:
+            heading, detail = line.split(':', 1)
+            headings.append(heading.strip())
+            details.append(detail.strip())
+    return headings[:5], details[:5]
+
+def lambda_handler(event, context):
+    method = event['httpMethod']
+    customer_code = event['queryStringParameters'].get('customer_code') if event.get('queryStringParameters') else None
+
+    if method == 'GET':
+        if not customer_code:
+            return {"statusCode": 400, "body": "customer_code required"}
+        try:
+            result = heartbeat_table.scan(
+                FilterExpression=Key('CUSTOMER_CODE').eq(customer_code)
+            )
+            return {"statusCode": 200, "body": json.dumps(result['Items'])}
+        except Exception as e:
+            return {"statusCode": 500, "body": f"Error querying heartbeat table: {str(e)}"}
+
+    elif method == 'POST':
+        body = json.loads(event['body'])
+        customer_code = body['customer_code']
+        
+        customer_data = customers_table.get_item(Key={'CUSTOMER_CODE': customer_code})
+        if 'Item' not in customer_data:
+            return {"statusCode": 404, "body": "Customer not found"}
+        
+        customer = customer_data['Item']
+        advice_text = generate_bedrock_advice(customer['CUSTOMER_NAME'], customer['INDUSTRY_NAME'])
+        headings, details = parse_bedrock_output(advice_text)
+        
+        heartbeat_id = str(uuid.uuid4())
+        timestamp = datetime.utcnow().isoformat()
+
+        item = {
+            'HEARTBEAT_ID': heartbeat_id,
+            'CUSTOMER_CODE': customer_code,
+            'CREATETS': timestamp,
+            'UPDATETS': timestamp,
+            'CREATEDBY': body.get('username', 'system'),
+            'UPDATEDBY': body.get('username', 'system'),
+            'ATTRIBUTE01': '',
+        }
+
+        for i in range(5):
+            item[f'ALERTADVICE0{i+1}_HEADING'] = headings[i] if i < len(headings) else ''
+            item[f'ALERTADVICE0{i+1}_DETAIL'] = details[i] if i < len(details) else ''
+        
+        heartbeat_table.put_item(Item=item)
+        return {"statusCode": 201, "body": json.dumps(item)}
+
+    elif method == 'PUT':
+        body = json.loads(event['body'])
+        heartbeat_id = body.get('HEARTBEAT_ID')
+        if not heartbeat_id:
+            return {"statusCode": 400, "body": "HEARTBEAT_ID is required"}
+
+        timestamp = datetime.utcnow().isoformat()
+        update_expression = "SET "
+        expression_values = {}
+        for key in ['ALERTADVICE01_HEADING', 'ALERTADVICE01_DETAIL', 'ALERTADVICE02_HEADING',
+                    'ALERTADVICE02_DETAIL', 'ALERTADVICE03_HEADING', 'ALERTADVICE03_DETAIL',
+                    'ALERTADVICE04_HEADING', 'ALERTADVICE04_DETAIL', 'ALERTADVICE05_HEADING',
+                    'ALERTADVICE05_DETAIL']:
+            if key in body:
+                update_expression += f"{key} = :{key}, "
+                expression_values[f":{key}"] = body[key]
+        update_expression += "UPDATETS = :ts, UPDATEDBY = :updatedby"
+        expression_values[":ts"] = timestamp
+        expression_values[":updatedby"] = body.get("UPDATEDBY", "system")
+
+        heartbeat_table.update_item(
+            Key={'HEARTBEAT_ID': heartbeat_id},
+            UpdateExpression=update_expression,
+            ExpressionAttributeValues=expression_values
+        )
+        return {"statusCode": 200, "body": "Heartbeat updated"}
+
+    elif method == 'DELETE':
+        body = json.loads(event['body'])
+        heartbeat_id = body.get('HEARTBEAT_ID')
+        if not heartbeat_id:
+            return {"statusCode": 400, "body": "HEARTBEAT_ID is required"}
+        
+        heartbeat_table.delete_item(Key={'HEARTBEAT_ID': heartbeat_id})
+        return {"statusCode": 200, "body": "Heartbeat deleted"}
+
+    return {"statusCode": 405, "body": "Method Not Allowed"}
+
+
+
+###GET
+{
+  "httpMethod": "GET",
+  "queryStringParameters": {
+    "customer_code": "GTS1"
+  }
+}
+
+
+##POST
+
