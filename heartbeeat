@@ -30,13 +30,20 @@ def lambda_handler(event, context):
         if http_method == 'GET':
             params = event.get('queryStringParameters') or {}
             cust = params.get('CUSTOMER_CODE')
-            if cust:
-                resp = table.scan(FilterExpression=Attr('CUSTOMER_CODE').eq(cust))
-            else:
-                resp = table.scan()
+
+            if not cust:
+                return {
+                    'statusCode': 400,
+                    'body': json.dumps({'error': 'CUSTOMER_CODE is required as query parameter'})
+                }
+
+            response = table.scan(
+                FilterExpression=Attr("CUSTOMER_CODE").eq(cust)
+            )
+            items = response.get('Items', [])
             return {
                 'statusCode': 200,
-                'body': json.dumps(resp.get('Items', []), cls=DecimalEncoder)
+                'body': json.dumps(items, cls=DecimalEncoder)
             }
 
         # ── POST ──────────────────────────────────────
@@ -47,10 +54,12 @@ def lambda_handler(event, context):
             scan_resp = table.scan(ProjectionExpression="HEARTBEAT_ID")
             ids = []
             for it in scan_resp.get('Items', []):
-                try: ids.append(int(it['HEARTBEAT_ID']))
-                except: pass
+                try:
+                    ids.append(int(it['HEARTBEAT_ID']))
+                except:
+                    pass
             new_id = max(ids, default=0) + 1
-            now = datetime.datetime.utcnow().isoformat() + "Z"
+            now = datetime.datetime.utcnow().isoformat()
 
             # 2) assemble item
             item = {
@@ -67,18 +76,15 @@ def lambda_handler(event, context):
                 'ALERTADVICE05_HEADING': body.get('ALERTADVICE05_HEADING', ''),
                 'ALERTADVICE05_DETAIL': body.get('ALERTADVICE05_DETAIL', ''),
                 'CREATETS': now,
-                'UPDATETS': now,
+                'UPDATETS': '',
                 'CREATEDBY': user,
-                'UPDATEDBY': user,
-                'ATTRIBUTE01': body.get('ATTRIBUTE01', '')
+                'UPDATEDBY': '',
+                'ATTRIBUTE01': ''
             }
-
-            # (Optional) insert Bedrock AI calls here…
-
             table.put_item(Item=item)
             return {
-                'statusCode': 201,
-                'body': json.dumps(item, cls=DecimalEncoder)
+                'statusCode': 200,
+                'body': json.dumps({'message': 'created'}, cls=DecimalEncoder)
             }
 
         # ── PUT ───────────────────────────────────────
@@ -86,28 +92,44 @@ def lambda_handler(event, context):
             body = json.loads(event.get('body', '{}'))
             hb = body.get('HEARTBEAT_ID')
             if hb is None:
-                return {'statusCode': 400, 'body': json.dumps({'error': 'HEARTBEAT_ID required'})}
+                return {
+                    'statusCode': 400,
+                    'body': json.dumps({'error': 'HEARTBEAT_ID is required'})
+                }
 
-            now = datetime.datetime.utcnow().isoformat() + "Z"
+            now = datetime.datetime.utcnow().isoformat()
+
             expr_parts = []
             vals = {}
+            names = {}
+
+            # Build update expressions excluding system fields UPDATEDBY and UPDATETS
             for k, v in body.items():
-                if k != 'HEARTBEAT_ID':
-                    expr_parts.append(f"{k} = :{k}")
+                if k != 'HEARTBEAT_ID' and k not in ('UPDATEDBY', 'UPDATETS'):
+                    expr_parts.append(f"#attr_{k} = :{k}")
                     vals[f":{k}"] = v
-            expr_parts.append("UPDATETS = :uts")
-            vals[":uts"] = now
-            expr_parts.append("UPDATEDBY = :uby")
-            vals[":uby"] = user
+                    names[f"#attr_{k}"] = k
+
+            # Add system-managed fields with unique aliases to avoid path overlap
+            expr_parts.append("#UB = :ub")
+            vals[":ub"] = user
+            names["#UB"] = "UPDATEDBY"
+
+            expr_parts.append("#UT = :ut")
+            vals[":ut"] = now
+            names["#UT"] = "UPDATETS"
+
+            update_expr = "SET " + ", ".join(expr_parts)
 
             table.update_item(
                 Key={'HEARTBEAT_ID': int(hb)},
-                UpdateExpression="SET " + ", ".join(expr_parts),
+                UpdateExpression=update_expr,
+                ExpressionAttributeNames=names,
                 ExpressionAttributeValues=vals
             )
             return {
                 'statusCode': 200,
-                'body': json.dumps({'message': 'Updated'}, cls=DecimalEncoder)
+                'body': json.dumps({'message': 'Item updated successfully'}, cls=DecimalEncoder)
             }
 
         # ── DELETE ────────────────────────────────────
@@ -115,9 +137,11 @@ def lambda_handler(event, context):
             params = event.get('queryStringParameters') or {}
             cust = params.get('CUSTOMER_CODE')
             if not cust:
-                return {'statusCode': 400, 'body': json.dumps({'error': 'CUSTOMER_CODE required'})}
+                return {
+                    'statusCode': 400,
+                    'body': json.dumps({'error': 'CUSTOMER_CODE is required'})
+                }
 
-            # find and delete all items for this customer
             to_del = table.scan(
                 FilterExpression=Attr('CUSTOMER_CODE').eq(cust),
                 ProjectionExpression='HEARTBEAT_ID'
@@ -132,14 +156,23 @@ def lambda_handler(event, context):
                 'body': json.dumps({'message': f"Deleted {len(to_del)} record(s) for {cust}"})
             }
 
-        # ── OTHER ──────────────────────────────────────
+        # ── OTHER METHODS ─────────────────────────────
         else:
-            return {'statusCode': 405, 'body': json.dumps({'error': 'Method not allowed'})}
+            return {
+                'statusCode': 405,
+                'body': json.dumps({'error': 'Method not allowed'})
+            }
 
     except ClientError as ce:
-        return {'statusCode': 500, 'body': json.dumps({'error': str(ce)})}
+        return {
+            'statusCode': 500,
+            'body': json.dumps({'error': str(ce)})
+        }
     except Exception as e:
-        return {'statusCode': 500, 'body': json.dumps({'error': str(e)})}
+        return {
+            'statusCode': 500,
+            'body': json.dumps({'error': str(e)})
+        }
 
 
 ##post
@@ -160,7 +193,7 @@ def lambda_handler(event, context):
 {
   "httpMethod": "GET",
   "queryStringParameters": {
-    "customer_code": "GTS1"
+    "CUSTOMER_CODE": "NMB0987"
   }
 }
 
