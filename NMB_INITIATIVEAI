@@ -1,0 +1,143 @@
+import json
+import boto3
+from boto3.dynamodb.conditions import Attr
+
+# Initialize clients
+dynamodb = boto3.resource("dynamodb")
+bedrock_runtime = boto3.client("bedrock-runtime", region_name="us-east-1")  # Titan Text Premier is in us-east-1
+
+# Table names
+CUSTOMERS_TABLE = "NMB_CUSTOMERS"
+KPIS_TABLE = "NMB_CUSTOMERS_KPIS"
+MODELS_TABLE = "NMB_CUSTOMER_MODELS"
+INITIATIVES_TABLE = "NMB_CUSTOMERS_INITIATIVES"  # Your initiatives table name
+
+def get_customer_data(customer_code):
+    table = dynamodb.Table(CUSTOMERS_TABLE)
+    response = table.scan(
+        FilterExpression=Attr("CUSTOMER_CODE").eq(customer_code)
+    )
+    return response["Items"][0] if response["Items"] else {}
+
+def get_kpis(customer_code):
+    table = dynamodb.Table(KPIS_TABLE)
+    response = table.scan(
+        FilterExpression=Attr("CUSTOMER_CODE").eq(customer_code)
+    )
+    return response.get("Items", [])
+
+def get_model_data(customer_code):
+    table = dynamodb.Table(MODELS_TABLE)
+    response = table.scan(
+        FilterExpression=Attr("CUSTOMER_CODE").eq(customer_code)
+    )
+    return response["Items"][0] if response["Items"] else {}
+
+def get_existing_initiatives(customer_code):
+    table = dynamodb.Table(INITIATIVES_TABLE)
+    response = table.scan(
+        FilterExpression=Attr("CUSTOMER_CODE").eq(customer_code)
+    )
+    return response.get("Items", [])
+
+def build_prompt_for_initiatives(customer, model, kpis, initiatives):
+    kpi_lines = "\n".join([
+        f"{k.get('KPI_NAME')}: {k.get('CURRENT_VALUE')} (target: {k.get('TARGET_VALUE')})" for k in kpis
+    ]) if kpis else "No KPI data available."
+
+    initiative_names = [f"\"{i.get('INITIATIVE_NAME')}\"" for i in initiatives]
+    initiatives_list = ", ".join(initiative_names) if initiative_names else "No existing initiatives."
+
+    return f"""
+You are a strategic business advisor helping define new initiatives for a company.
+
+Company Overview:
+- Name: {customer.get("CUSTOMER_NAME", "N/A")}
+- Industry: {customer.get("INDUSTRY_NAME", "N/A")}
+- Size: {customer.get("COMPANY_SIZE", "N/A")}
+- Ownership: {customer.get("OWNERSHIP_NAME", "N/A")}
+
+Business Model Highlights:
+- Key Partners: {model.get("KEY_PARTNERS", "")}
+- Key Activities: {model.get("KEY_ACTIVITIES", "")}
+- Value Propositions: {model.get("VALUE_PROPOSITIONS", "")}
+- Channels: {model.get("CHANNELS", "")}
+- Customer Segments: {model.get("CUSTOMER_SEGMENTS", "")}
+
+KPI Snapshot:
+{kpi_lines}
+
+Existing Initiatives:
+{initiatives_list}
+
+AI Instructions:
+Based on this customer’s business context and current KPIs, suggest 3 new strategic business initiatives. Avoid repeating existing initiatives. Only return the 3 new initiative names as a JSON list like:
+[
+  "Initiative One",
+  "Initiative Two",
+  "Initiative Three"
+]
+""".strip()
+
+def query_bedrock(prompt):
+    response = bedrock_runtime.invoke_model(
+        modelId="amazon.titan-text-premier-v1:0",
+        contentType="application/json",
+        accept="application/json",
+        body=json.dumps({
+            "inputText": prompt
+        })
+    )
+    response_body = response['body'].read().decode('utf-8')
+    bedrock_response = json.loads(response_body)
+
+    # Extract the outputText (stringified JSON array)
+    output_text = bedrock_response["results"][0]["outputText"]
+
+    # Parse output_text to get Python list of initiatives
+    suggested_initiatives = json.loads(output_text)
+    return suggested_initiatives
+
+def lambda_handler(event, context):
+    try:
+        customer_code = event.get("queryStringParameters", {}).get("customer_code", None)
+        if not customer_code:
+            return {
+                "statusCode": 400,
+                "body": json.dumps({"error": "Missing 'customer_code' query parameter"}),
+                "headers": {"Content-Type": "application/json", "Access-Control-Allow-Origin": "*"}
+            }
+
+        customer = get_customer_data(customer_code)
+        if not customer:
+            return {
+                "statusCode": 404,
+                "body": json.dumps({"error": "Customer not found"}),
+                "headers": {"Content-Type": "application/json", "Access-Control-Allow-Origin": "*"}
+            }
+
+        model = get_model_data(customer_code)
+        kpis = get_kpis(customer_code)
+        initiatives = get_existing_initiatives(customer_code)
+
+        prompt = build_prompt_for_initiatives(customer, model, kpis, initiatives)
+
+        suggestions = query_bedrock(prompt)
+
+        return {
+            "statusCode": 200,
+            "body": json.dumps({
+                "suggested_initiatives": suggestions
+            }),
+            "headers": {"Content-Type": "application/json", "Access-Control-Allow-Origin": "*"}
+        }
+
+    except Exception as e:
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": str(e)}),
+            "headers": {
+                "Content-Type": "application/json",
+                "Access-Control-Allow-Origin": "*"
+            }
+        }
