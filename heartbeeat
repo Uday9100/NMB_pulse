@@ -43,7 +43,11 @@ def lambda_handler(event, context):
             items = response.get('Items', [])
             return {
                 'statusCode': 200,
-                'body': json.dumps(items, cls=DecimalEncoder)
+                'body': json.dumps(items, cls=DecimalEncoder),
+                'headers': {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*'
+        }
             }
 
         # ── POST ──────────────────────────────────────
@@ -84,7 +88,11 @@ def lambda_handler(event, context):
             table.put_item(Item=item)
             return {
                 'statusCode': 200,
-                'body': json.dumps({'message': 'created'}, cls=DecimalEncoder)
+                'body': json.dumps({'message': 'created'}, cls=DecimalEncoder),
+                'headers': {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*'
+        }
             }
 
         # ── PUT ───────────────────────────────────────
@@ -129,7 +137,11 @@ def lambda_handler(event, context):
             )
             return {
                 'statusCode': 200,
-                'body': json.dumps({'message': 'Item updated successfully'}, cls=DecimalEncoder)
+                'body': json.dumps({'message': 'Item updated successfully'}, cls=DecimalEncoder),
+                'headers': {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*'
+        }
             }
 
         # ── DELETE ────────────────────────────────────
@@ -153,7 +165,11 @@ def lambda_handler(event, context):
 
             return {
                 'statusCode': 200,
-                'body': json.dumps({'message': f"Deleted {len(to_del)} record(s) for {cust}"})
+                'body': json.dumps({'message': f"Deleted {len(to_del)} record(s) for {cust}"}),
+                'headers': {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*'
+        }
             }
 
         # ── OTHER METHODS ─────────────────────────────
@@ -173,7 +189,6 @@ def lambda_handler(event, context):
             'statusCode': 500,
             'body': json.dumps({'error': str(e)})
         }
-
 
 ##post
 {
