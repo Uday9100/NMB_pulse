@@ -221,3 +221,25 @@ def lambda_handler(event, context):
   }
 }
 
+#API POST
+{
+  "CUSTOMER_CODE": "NMB16",
+  "ALERTADVICE01_HEADING": "Heading 1",
+  "ALERTADVICE01_DETAIL": "Detail 1",
+  "ALERTADVICE02_HEADING": "Heading 2",
+  "ALERTADVICE02_DETAIL": "Detail 2",
+  "ALERTADVICE03_HEADING": "Heading 3",
+  "ALERTADVICE03_DETAIL": "Detail 3",
+  "ALERTADVICE04_HEADING": "Heading 4",
+  "ALERTADVICE04_DETAIL": "Detail 4",
+  "ALERTADVICE05_HEADING": "Heading 5",
+  "ALERTADVICE05_DETAIL": "Detail 5",
+  "CREATETS": "2025-05-23T15:30:00Z",
+  "UPDATETS": "2025-05-23T15:30:00Z",
+  "CREATEDBY": "user1",
+  "UPDATEDBY": "user1",
+  "ATTRIBUTE01": "Additional info"
+}
+
+#API PUT
+
